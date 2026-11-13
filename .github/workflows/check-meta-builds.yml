@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      test_cloudflare:
+        description: "Send a test POST to the Cloudflare /admin/build endpoint"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -13,6 +19,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test-cloudflare:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_cloudflare }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send test POST to Cloudflare
+        env:
+          WORKER_URL: "https://holy-river-936a.joeswansonfam1.workers.dev/admin/build"
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          from datetime import datetime, timezone
+
+          payload = {
+              "event": "github_actions_test",
+              "test": True,
+              "appId": "1114644571740688",
+              "message": "Test request from GitHub Actions; not a real Meta build.",
+              "sentAt": datetime.now(timezone.utc).isoformat()
+          }
+          request = urllib.request.Request(
+              os.environ["WORKER_URL"],
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+          print("Sending a clearly labeled test POST to the Cloudflare endpoint...")
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  body = response.read().decode("utf-8", errors="replace")
+                  print(f"Cloudflare response: HTTP {response.status}")
+                  print(body[:4000] if body else "(empty response body)")
+                  if not 200 <= response.status < 300:
+                      raise SystemExit("Cloudflare returned a non-success HTTP status.")
+          except urllib.error.HTTPError as error:
+              body = error.read().decode("utf-8", errors="replace")
+              print(f"Cloudflare response: HTTP {error.code}")
+              print(body[:4000] if body else "(empty response body)")
+              raise SystemExit(1)
+          PY
+
   check:
     runs-on: ubuntu-latest
     steps:
@@ -80,7 +126,7 @@ jobs:
           old_state = json.loads(path.read_text()) if path.exists() else None
 
           if old_state is None:
-              print("BASELINE: First successful check. Saving current versions without sending a notification.")
+              print("BASELINE: First successful check. Saving the baseline without sending a notification.")
               summary_lines = ["## Meta Quest build check", "First successful check: saved the baseline; no POST was sent."]
           else:
               changes = []
@@ -98,14 +144,13 @@ jobs:
                       "previousVersionName": old.get("versionName") if old else None,
                       "detectedAt": datetime.now(timezone.utc).isoformat()
                   }
-                  body = json.dumps(payload).encode()
                   req = urllib.request.Request(
                       os.environ["WORKER_URL"],
-                      data=body,
+                      data=json.dumps(payload).encode(),
                       headers={"Content-Type": "application/json"},
                       method="POST"
                   )
-                  print(f"CHANGE DETECTED: {current['channelName']}; POSTing to configured Cloudflare endpoint...")
+                  print(f"CHANGE DETECTED: {current['channelName']}; POSTing to Cloudflare...")
                   with urllib.request.urlopen(req, timeout=30) as response:
                       response_body = response.read().decode("utf-8", errors="replace")
                       if not 200 <= response.status < 300:
@@ -116,7 +161,7 @@ jobs:
               if changes:
                   summary_lines = ["## Meta Quest build check", "POST sent successfully for: " + ", ".join(changes)]
               else:
-                  print("NO CHANGES: All previously recorded release-channel versions are unchanged; no POST sent.")
+                  print("NO CHANGES: All recorded release-channel versions are unchanged; no POST sent.")
                   summary_lines = ["## Meta Quest build check", "No release-channel version changes detected; no POST sent."]
 
           path.write_text(json.dumps(channels, indent=2) + "\n")
