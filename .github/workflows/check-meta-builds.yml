@@ -26,37 +26,40 @@ jobs:
       - name: Send test POST to Cloudflare
         env:
           WORKER_URL: "https://holy-river-936a.joeswansonfam1.workers.dev/admin/build"
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
         run: |
           python3 - <<'PY'
           import json, os, urllib.request, urllib.error
-          from datetime import datetime, timezone
 
-          payload = {
-              "event": "github_actions_test",
-              "test": True,
-              "appId": "1114644571740688",
-              "message": "Test request from GitHub Actions; not a real Meta build.",
-              "sentAt": datetime.now(timezone.utc).isoformat()
-          }
+          # Safe authentication check: an empty build is intentionally rejected
+          # by the Worker after auth, before it can modify the stored latest build.
           request = urllib.request.Request(
               os.environ["WORKER_URL"],
-              data=json.dumps(payload).encode(),
-              headers={"Content-Type": "application/json", "User-Agent": "MetaBuildDetector/1.0 (+https://github.com/cwazmaz/meta-build-detect)"},
+              data=json.dumps({}).encode(),
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer " + os.environ.get("ADMIN_TOKEN", ""),
+                  "User-Agent": "MetaBuildDetector/1.0 (+https://github.com/cwazmaz/meta-build-detect)"
+              },
               method="POST"
           )
-          print("Sending a clearly labeled test POST to the Cloudflare endpoint...")
+          if not os.environ.get("ADMIN_TOKEN", "").strip():
+              raise SystemExit("Missing ADMIN_TOKEN repository secret.")
+          print("Checking Cloudflare authentication safely (this request will not update the latest build)...")
           try:
               with urllib.request.urlopen(request, timeout=30) as response:
                   body = response.read().decode("utf-8", errors="replace")
-                  print(f"Cloudflare response: HTTP {response.status}")
-                  print(body[:4000] if body else "(empty response body)")
-                  if not 200 <= response.status < 300:
-                      raise SystemExit("Cloudflare returned a non-success HTTP status.")
+                  print(f"Unexpected response: HTTP {response.status}")
+                  print(body[:4000])
+                  raise SystemExit("Expected HTTP 400 for the intentionally incomplete test body.")
           except urllib.error.HTTPError as error:
               body = error.read().decode("utf-8", errors="replace")
               print(f"Cloudflare response: HTTP {error.code}")
               print(body[:4000] if body else "(empty response body)")
-              raise SystemExit(1)
+              if error.code == 400 and "version, buildId, and channel are required" in body:
+                  print("AUTHENTICATION SUCCESS: Worker accepted the Bearer token; test body was safely rejected.")
+              else:
+                  raise SystemExit("Authentication check failed or Worker returned an unexpected response.")
           PY
 
   check:
@@ -83,6 +86,7 @@ jobs:
           META_APP_ID: "1114644571740688"
           META_USER_TOKEN: ${{ secrets.META_USER_TOKEN }}
           WORKER_URL: "https://holy-river-936a.joeswansonfam1.workers.dev/admin/build"
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
         run: |
           python3 - <<'PY'
           import json, os, subprocess, urllib.request
@@ -92,6 +96,8 @@ jobs:
           token = os.environ.get("META_USER_TOKEN", "").strip()
           if not token:
               raise SystemExit("Missing META_USER_TOKEN repository secret.")
+          if not os.environ.get("ADMIN_TOKEN", "").strip():
+              raise SystemExit("Missing ADMIN_TOKEN repository secret.");
 
           app_id = os.environ["META_APP_ID"]
           print(f"Checking Meta release channels for App ID {app_id}...")
@@ -137,6 +143,10 @@ jobs:
                       continue
 
                   payload = {
+                      "version": str(current["versionName"] or current["versionCode"]),
+                      "buildId": str(current["versionCode"]),
+                      "channel": str(current["channelName"]),
+                      "releaseNotes": "",
                       "event": "meta_quest_release_channel_updated",
                       "appId": app_id,
                       **current,
@@ -147,7 +157,11 @@ jobs:
                   req = urllib.request.Request(
                       os.environ["WORKER_URL"],
                       data=json.dumps(payload).encode(),
-                      headers={"Content-Type": "application/json", "User-Agent": "MetaBuildDetector/1.0 (+https://github.com/cwazmaz/meta-build-detect)"},
+                      headers={
+                          "Content-Type": "application/json",
+                          "Authorization": "Bearer " + os.environ.get("ADMIN_TOKEN", ""),
+                          "User-Agent": "MetaBuildDetector/1.0 (+https://github.com/cwazmaz/meta-build-detect)"
+                      },
                       method="POST"
                   )
                   print(f"CHANGE DETECTED: {current['channelName']}; POSTing to Cloudflare...")
