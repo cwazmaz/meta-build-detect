@@ -1,0 +1,102 @@
+name: Check Meta Quest builds
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: meta-build-poll
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Meta Platform Utility
+        run: |
+          curl --fail --location --retry 3 "https://www.oculus.com/download_app/?id=5159709737372459" -o /tmp/ovr-platform-util
+          chmod +x /tmp/ovr-platform-util
+          /tmp/ovr-platform-util version
+
+      - name: Check Meta release channels and notify Cloudflare
+        env:
+          META_APP_ID: "1114644571740688"
+          META_USER_TOKEN: ${{ secrets.META_USER_TOKEN }}
+          WORKER_URL: "https://holy-river-936a.joeswansonfam1.workers.dev/"
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, urllib.request
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          token = os.environ.get("META_USER_TOKEN", "").strip()
+          if not token:
+              raise SystemExit("Add the META_USER_TOKEN repository secret first.")
+
+          app_id = os.environ["META_APP_ID"]
+          result = subprocess.run(
+              ["/tmp/ovr-platform-util", "get-release-channel-data",
+               "--app-id", app_id, "--token", token],
+              check=True, capture_output=True, text=True
+          )
+
+          channels = {}
+          for line in result.stdout.splitlines():
+              if "|" not in line:
+                  continue
+              p = [x.strip() for x in line.strip().strip("|").split("|")]
+              if len(p) >= 4 and p[0].lower() != "channel name" and p[1].isdigit():
+                  channels[p[1]] = {
+                      "channelName": p[0], "channelId": p[1],
+                      "versionCode": p[2], "versionName": p[3]
+                  }
+          if not channels:
+              print(result.stdout)
+              raise SystemExit("Could not parse release-channel data; state was not changed.")
+
+          path = Path("state/release-channels.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          old_state = json.loads(path.read_text()) if path.exists() else None
+
+          if old_state is not None:
+              for channel_id, current in channels.items():
+                  old = old_state.get(channel_id)
+                  if old and (old.get("versionCode"), old.get("versionName")) == (current["versionCode"], current["versionName"]):
+                      continue
+                  payload = {
+                      "event": "meta_quest_release_channel_updated",
+                      "appId": app_id,
+                      **current,
+                      "previousVersionCode": old.get("versionCode") if old else None,
+                      "previousVersionName": old.get("versionName") if old else None,
+                      "detectedAt": datetime.now(timezone.utc).isoformat()
+                  }
+                  req = urllib.request.Request(
+                      os.environ["WORKER_URL"],
+                      data=json.dumps(payload).encode(),
+                      headers={"Content-Type": "application/json"},
+                      method="POST"
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      if not 200 <= response.status < 300:
+                          raise RuntimeError(f"Cloudflare Worker returned HTTP {response.status}")
+                      print(f"Notification sent for {current['channelName']}")
+
+          path.write_text(json.dumps(channels, indent=2) + "\n")
+          PY
+
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/release-channels.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update Meta release channel state"
+            git push
+          fi
