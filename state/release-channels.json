@@ -1,0 +1,14 @@
+{
+  "2166214760591101": {
+    "channelName": "live",
+    "channelId": "2166214760591101",
+    "versionCode": "v99",
+    "versionName": "9.9"
+  },
+  "1617683845994834": {
+    "channelName": "beta",
+    "channelId": "1617683845994834",
+    "versionCode": "v151",
+    "versionName": "1.5.1"
+  }
+}
