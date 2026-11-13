@@ -2,7 +2,7 @@ name: Check Meta Quest builds
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
     inputs:
       test_cloudflare:
