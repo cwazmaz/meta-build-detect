@@ -19,9 +19,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download Meta Platform Utility
+        env:
+          META_CLI_DOWNLOAD_URL: ${{ secrets.META_CLI_DOWNLOAD_URL }}
         run: |
-          curl --fail --location --retry 3 "https://www.oculus.com/download_app/?id=5159709737372459" -o /tmp/ovr-platform-util
+          set -euo pipefail
+          if [ -z "$META_CLI_DOWNLOAD_URL" ]; then
+            echo "Add META_CLI_DOWNLOAD_URL using the direct Linux download link from Meta's official downloads page."
+            exit 1
+          fi
+          curl --fail --location --retry 3 "$META_CLI_DOWNLOAD_URL" -o /tmp/ovr-platform-util
           chmod +x /tmp/ovr-platform-util
+          file /tmp/ovr-platform-util
           /tmp/ovr-platform-util version
 
       - name: Check Meta release channels and notify Cloudflare
@@ -64,6 +72,7 @@ jobs:
           path.parent.mkdir(parents=True, exist_ok=True)
           old_state = json.loads(path.read_text()) if path.exists() else None
 
+          # The first successful run establishes a baseline without sending notifications.
           if old_state is not None:
               for channel_id, current in channels.items():
                   old = old_state.get(channel_id)
