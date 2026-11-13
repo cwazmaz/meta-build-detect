@@ -41,7 +41,7 @@ jobs:
           request = urllib.request.Request(
               os.environ["WORKER_URL"],
               data=json.dumps(payload).encode(),
-              headers={"Content-Type": "application/json"},
+              headers={"Content-Type": "application/json", "User-Agent": "MetaBuildDetector/1.0 (+https://github.com/cwazmaz/meta-build-detect)"},
               method="POST"
           )
           print("Sending a clearly labeled test POST to the Cloudflare endpoint...")
@@ -147,7 +147,7 @@ jobs:
                   req = urllib.request.Request(
                       os.environ["WORKER_URL"],
                       data=json.dumps(payload).encode(),
-                      headers={"Content-Type": "application/json"},
+                      headers={"Content-Type": "application/json", "User-Agent": "MetaBuildDetector/1.0 (+https://github.com/cwazmaz/meta-build-detect)"},
                       method="POST"
                   )
                   print(f"CHANGE DETECTED: {current['channelName']}; POSTing to Cloudflare...")
