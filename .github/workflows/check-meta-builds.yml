@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$META_CLI_DOWNLOAD_URL" ]; then
-            echo "Add META_CLI_DOWNLOAD_URL using the direct Linux download link from Meta's official downloads page."
+            echo "::error::Missing META_CLI_DOWNLOAD_URL repository secret."
             exit 1
           fi
           curl --fail --location --retry 3 "$META_CLI_DOWNLOAD_URL" -o /tmp/ovr-platform-util
@@ -36,7 +36,7 @@ jobs:
         env:
           META_APP_ID: "1114644571740688"
           META_USER_TOKEN: ${{ secrets.META_USER_TOKEN }}
-          WORKER_URL: "https://holy-river-936a.joeswansonfam1.workers.dev/"
+          WORKER_URL: "https://holy-river-936a.joeswansonfam1.workers.dev/admin/build"
         run: |
           python3 - <<'PY'
           import json, os, subprocess, urllib.request
@@ -45,9 +45,10 @@ jobs:
 
           token = os.environ.get("META_USER_TOKEN", "").strip()
           if not token:
-              raise SystemExit("Add the META_USER_TOKEN repository secret first.")
+              raise SystemExit("Missing META_USER_TOKEN repository secret.")
 
           app_id = os.environ["META_APP_ID"]
+          print(f"Checking Meta release channels for App ID {app_id}...")
           result = subprocess.run(
               ["/tmp/ovr-platform-util", "get-release-channel-data",
                "--app-id", app_id, "--token", token],
@@ -64,20 +65,31 @@ jobs:
                       "channelName": p[0], "channelId": p[1],
                       "versionCode": p[2], "versionName": p[3]
                   }
+
           if not channels:
-              print(result.stdout)
-              raise SystemExit("Could not parse release-channel data; state was not changed.")
+              print("Meta CLI output (no token is printed):")
+              print(result.stdout[:12000])
+              raise SystemExit("Could not parse release-channel data; no notification sent and state was not changed.")
+
+          print(f"Meta returned {len(channels)} release channel(s):")
+          for channel in channels.values():
+              print(f"- {channel['channelName']}: versionCode={channel['versionCode']}, versionName={channel['versionName']}")
 
           path = Path("state/release-channels.json")
           path.parent.mkdir(parents=True, exist_ok=True)
           old_state = json.loads(path.read_text()) if path.exists() else None
 
-          # The first successful run establishes a baseline without sending notifications.
-          if old_state is not None:
+          if old_state is None:
+              print("BASELINE: First successful check. Saving current versions without sending a notification.")
+              summary_lines = ["## Meta Quest build check", "First successful check: saved the baseline; no POST was sent."]
+          else:
+              changes = []
               for channel_id, current in channels.items():
                   old = old_state.get(channel_id)
                   if old and (old.get("versionCode"), old.get("versionName")) == (current["versionCode"], current["versionName"]):
+                      print(f"UNCHANGED: {current['channelName']} remains at {current['versionCode']} ({current['versionName']}).")
                       continue
+
                   payload = {
                       "event": "meta_quest_release_channel_updated",
                       "appId": app_id,
@@ -86,18 +98,30 @@ jobs:
                       "previousVersionName": old.get("versionName") if old else None,
                       "detectedAt": datetime.now(timezone.utc).isoformat()
                   }
+                  body = json.dumps(payload).encode()
                   req = urllib.request.Request(
                       os.environ["WORKER_URL"],
-                      data=json.dumps(payload).encode(),
+                      data=body,
                       headers={"Content-Type": "application/json"},
                       method="POST"
                   )
+                  print(f"CHANGE DETECTED: {current['channelName']}; POSTing to configured Cloudflare endpoint...")
                   with urllib.request.urlopen(req, timeout=30) as response:
+                      response_body = response.read().decode("utf-8", errors="replace")
                       if not 200 <= response.status < 300:
-                          raise RuntimeError(f"Cloudflare Worker returned HTTP {response.status}")
-                      print(f"Notification sent for {current['channelName']}")
+                          raise RuntimeError(f"Cloudflare Worker returned HTTP {response.status}: {response_body[:1000]}")
+                      print(f"POST SUCCESS: HTTP {response.status}; response: {response_body[:1000]}")
+                  changes.append(current["channelName"])
+
+              if changes:
+                  summary_lines = ["## Meta Quest build check", "POST sent successfully for: " + ", ".join(changes)]
+              else:
+                  print("NO CHANGES: All previously recorded release-channel versions are unchanged; no POST sent.")
+                  summary_lines = ["## Meta Quest build check", "No release-channel version changes detected; no POST sent."]
 
           path.write_text(json.dumps(channels, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(summary_lines) + "\n")
           PY
 
       - name: Commit updated state
@@ -108,4 +132,7 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "Update Meta release channel state"
             git push
+            echo "Saved updated release-channel state."
+          else
+            echo "No state changes to commit."
           fi
