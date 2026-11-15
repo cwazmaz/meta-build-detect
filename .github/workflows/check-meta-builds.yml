@@ -10,6 +10,11 @@ on:
         required: false
         default: false
         type: boolean
+      test_apk_filename:
+        description: "List the APK filename for the test build"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -61,6 +66,37 @@ jobs:
               else:
                   raise SystemExit("Authentication check failed or Worker returned an unexpected response.")
           PY
+
+  test-apk-filename:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_apk_filename }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Meta Platform Utility
+        env:
+          META_CLI_DOWNLOAD_URL: ${{ secrets.META_CLI_DOWNLOAD_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$META_CLI_DOWNLOAD_URL" ]; then
+            echo "::error::Missing META_CLI_DOWNLOAD_URL repository secret."
+            exit 1
+          fi
+          curl --fail --location --retry 3 "$META_CLI_DOWNLOAD_URL" -o /tmp/ovr-platform-util
+          chmod +x /tmp/ovr-platform-util
+          /tmp/ovr-platform-util version
+
+      - name: List files for the existing Meta build (no download)
+        env:
+          META_USER_TOKEN: ${{ secrets.META_USER_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$META_USER_TOKEN" ]; then
+            echo "::error::Missing META_USER_TOKEN repository secret."
+            exit 1
+          fi
+          /tmp/ovr-platform-util download-quest-build \
+            --build-id 9972703766151643 \
+            --list \
+            --token "$META_USER_TOKEN"
 
   check:
     runs-on: ubuntu-latest
