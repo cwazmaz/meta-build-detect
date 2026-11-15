@@ -39,6 +39,7 @@ jobs:
           form = urllib.parse.urlencode({
               "doc_id": "41102334252699167",
               "fb_api_req_friendly_name": operation,
+              "__a": "1",
               "variables": json.dumps({"binaryID": binary_id}, separators=(",", ":"))
           }).encode()
 
