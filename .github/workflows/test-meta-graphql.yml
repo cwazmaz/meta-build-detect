@@ -1,0 +1,113 @@
+name: Test Meta build GraphQL (safe)
+
+on:
+  workflow_dispatch:
+    inputs:
+      binary_id:
+        description: "Meta Build ID to inspect"
+        required: true
+        default: "9972703766151643"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test-meta-graphql:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Meta dashboard GraphQL without browser cookies
+        env:
+          META_USER_TOKEN: ${{ secrets.META_USER_TOKEN }}
+          BINARY_ID: ${{ inputs.binary_id }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ.get("META_USER_TOKEN", "").strip()
+          binary_id = os.environ.get("BINARY_ID", "").strip()
+          if not token:
+              raise SystemExit("Missing META_USER_TOKEN repository secret.")
+          if not binary_id or not binary_id.isdigit():
+              raise SystemExit("Enter a numeric Meta Build ID.")
+
+          operation = "OCDevManageApplicationBinaryRootQuery"
+          form = urllib.parse.urlencode({
+              "doc_id": "41102334252699167",
+              "fb_api_req_friendly_name": operation,
+              "variables": json.dumps({"binaryID": binary_id}, separators=(",", ":"))
+          }).encode()
+
+          request = urllib.request.Request(
+              "https://developers.meta.com/api/graphql/",
+              data=form,
+              headers={
+                  "Content-Type": "application/x-www-form-urlencoded",
+                  "Authorization": "Bearer " + token,
+                  "X-FB-Friendly-Name": operation,
+                  "User-Agent": "MetaBuildDetector/1.0"
+              },
+              method="POST"
+          )
+
+          print("Testing Meta GraphQL with META_USER_TOKEN only.")
+          print("No browser cookies, lsd value, Cloudflare endpoint, or live detector are used.")
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  status = response.status
+                  raw = response.read().decode("utf-8", errors="replace")
+          except urllib.error.HTTPError as error:
+              status = error.code
+              raw = error.read().decode("utf-8", errors="replace")
+          except Exception as error:
+              raise SystemExit(f"Request failed: {type(error).__name__}: {error}")
+
+          print(f"HTTP status: {status}")
+          try:
+              payload = json.loads(raw)
+          except json.JSONDecodeError:
+              print("Meta returned a non-JSON response. First 1000 characters:")
+              print(raw[:1000])
+              raise SystemExit("Could not parse Meta's response.")
+
+          if payload.get("errors"):
+              print("GraphQL errors:")
+              for item in payload["errors"][:5]:
+                  print("-", item.get("message", "Unspecified GraphQL error"))
+          if payload.get("error"):
+              err = payload["error"]
+              if isinstance(err, dict):
+                  print("Meta error:", err.get("message", str(err))[:1000])
+              else:
+                  print("Meta error:", str(err)[:1000])
+
+          matches = []
+          def walk(value, path=""):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      child_path = f"{path}.{key}" if path else key
+                      key_lower = key.lower()
+                      if any(term in key_lower for term in ("filename", "file_name", "filesize", "file_size", "size")):
+                          if not isinstance(child, (dict, list)):
+                              matches.append((child_path, child))
+                      walk(child, child_path)
+              elif isinstance(value, list):
+                  for index, child in enumerate(value):
+                      walk(child, f"{path}[{index}]")
+
+          walk(payload)
+          if matches:
+              print("Possible filename/size fields returned:")
+              for key, value in matches[:30]:
+                  print(f"{key}: {value}")
+          elif not payload.get("errors") and not payload.get("error"):
+              print("No obvious filename/size fields found. Top-level response keys:", ", ".join(payload.keys()))
+
+          if status >= 400 or payload.get("errors") or payload.get("error"):
+              raise SystemExit("The test did not authenticate successfully. This did not change any live data.")
+          print("GraphQL request completed without an API error.")
+          PY
