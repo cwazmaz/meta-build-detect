@@ -119,7 +119,7 @@ jobs:
 
       - name: Check Meta release channels and notify Cloudflare
         env:
-          META_APP_ID: "1114644571740688"
+          META_APP_ID: "1460834487113588"
           META_USER_TOKEN: ${{ secrets.META_USER_TOKEN }}
           WORKER_URL: "https://holy-river-936a.joeswansonfam1.workers.dev/admin/build"
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
